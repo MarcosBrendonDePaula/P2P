@@ -1,0 +1,13 @@
+{
+    "stun": [
+      "177.23.196.199:54321"
+    ],
+    "turn": [
+      {
+        "url": "turn:meuservidor.com:5349",
+        "username": "usuario",
+        "credential": "senha_forte"
+      }
+    ]
+  }
+  
