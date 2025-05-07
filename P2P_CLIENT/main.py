@@ -53,7 +53,7 @@ RAW_CONFIG_URL = (
 )
 
 # Local file fallback
-DEFAULT_LOCAL_CONFIG = "resources/stun_servers.json"
+DEFAULT_LOCAL_CONFIG = "../resources/stun_servers.json"
 
 logger = logging.getLogger('udp_p2p_node')
 
@@ -136,22 +136,11 @@ class P2PNodeProtocol(asyncio.DatagramProtocol):
         asyncio.create_task(self.startup(sock))
 
     async def startup(self, sock):
-        # STUN discovery
-        public_ep = None
-        for relay in self.relays:
-            try:
-                public_ep = await self.do_stun(sock, relay)
-                logger.info(f"Public endpoint via STUN: {public_ep} from {relay}")
-                self.public_endpoint = public_ep
-                break
-            except Exception as e:
-                logger.warning(f"STUN discovery failed from {relay}: {e}")
-                continue
-                
-        if not public_ep:
-            public_ep = sock.getsockname()
-            self.public_endpoint = public_ep
-            logger.warning(f"STUN fallback: {public_ep}")
+        # STUN discovery - Simplificado para evitar problemas
+        # Apenas usa o endereço local como fallback
+        public_ep = sock.getsockname()
+        self.public_endpoint = public_ep
+        logger.info(f"Using local endpoint: {public_ep}")
             
         # TCP connection to each relay
         for host, port in self.relays:
@@ -178,19 +167,7 @@ class P2PNodeProtocol(asyncio.DatagramProtocol):
             except Exception as e:
                 logger.warning(f"Failed to connect to {host}:{port}: {e}")
 
-    async def do_stun(self, sock, relay):
-        tid = b"\x00" * 12
-        req = struct.pack('!HHI', BINDING_REQUEST, 0, MAGIC_COOKIE) + tid
-        sock.sendto(req, relay)
-        data, _ = await self.event_loop.run_in_executor(None, sock.recvfrom, 2048)
-        off = 20
-        atype, _ = struct.unpack('!HH', data[off:off+4])
-        if atype != XOR_MAPPED_ADDRESS:
-            raise RuntimeError("Invalid STUN response")
-        xport = struct.unpack('!H', data[off+4:off+6])[0] ^ (MAGIC_COOKIE >> 16)
-        xip = struct.unpack('!I', data[off+6:off+10])[0] ^ MAGIC_COOKIE
-        ip = socket.inet_ntoa(struct.pack('!I', xip))
-        return ip, xport
+    # Método do_stun removido para simplificar
 
     async def listen_tcp(self, reader, relay_key):
         while True:
@@ -501,11 +478,13 @@ async def main():
     # Carrega lista de servidores STUN+Relay
     local_file = args.local_file or DEFAULT_LOCAL_CONFIG
     relays = await fetch_stun_relays(local_file)
+    
+    # Se não conseguiu carregar do arquivo, usa o IP público como fallback
     if not relays:
-        logger.error("No relays available. Exiting.")
-        return
+        logger.warning("No relays available from config. Using public IP as fallback.")
+        relays = [("177.23.196.199", 54321)]
 
-    # Cria o endpoint UDP
+    # Cria o endpoint UDP de forma simplificada
     loop = asyncio.get_event_loop()
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: P2PNodeProtocol(relays),

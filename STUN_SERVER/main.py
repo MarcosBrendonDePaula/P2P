@@ -77,79 +77,178 @@ class RelayServer:
                 line = await reader.readline()
                 if not line:
                     break
-                msg = json.loads(line.decode())
+                try:
+                    msg = json.loads(line.decode())
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON received: {line}")
+                    continue
+                    
                 mtype = msg.get('type')
-                if mtype == HELLO:
-                    temp_id = msg['temp_id']
-                    addr = tuple(msg.get('addr', peername))
-                    # Generate a secure connection ID (32 characters)
-                    assigned = f"peer-{uuid.uuid4().hex}-{secrets.token_hex(8)}"
+                logger.info(f"Received message type: {mtype}")
+                
+                # Aceita tanto HELLO quanto REGISTER (para compatibilidade)
+                if mtype == HELLO or mtype == REGISTER:
+                    # Extrai o ID temporário (pode ser temp_id ou peer_id)
+                    temp_id = msg.get('temp_id') or msg.get('peer_id')
+                    if not temp_id:
+                        logger.warning(f"Message missing ID: {msg}")
+                        continue
+                        
+                    # Extrai o endereço
+                    addr_list = msg.get('addr')
+                    if addr_list and len(addr_list) >= 2:
+                        addr = tuple(addr_list[:2])  # Pega apenas host e porta
+                    else:
+                        addr = peername
+                    # Gera um ID seguro (ou usa o existente para REGISTER)
+                    if mtype == REGISTER and 'peer_id' in msg:
+                        assigned = msg['peer_id']
+                        logger.info(f"Using existing ID {assigned} from REGISTER")
+                    else:
+                        # Generate a secure connection ID (32 characters)
+                        assigned = f"peer-{uuid.uuid4().hex}-{secrets.token_hex(8)}"
+                        logger.info(f"Generated new ID {assigned}")
+                    # Registra o cliente
                     self.clients[assigned] = writer
                     self.addrs[assigned] = addr
                     self.connections[assigned] = set()  # Initialize empty connections set
-                    resp = {'type': ASSIGN, 'temp_id': temp_id, 'assigned_id': assigned}
+                    
+                    # Responde com o ID atribuído
+                    if mtype == HELLO:
+                        resp = {'type': ASSIGN, 'temp_id': temp_id, 'assigned_id': assigned}
+                    else:  # REGISTER
+                        resp = {'type': SYNC, 'peer_id': assigned, 'addr': list(addr)}
+                        
                     writer.write(json.dumps(resp).encode() + b'\n')
                     await writer.drain()
-                    logger.info(f"Assigned ID {assigned} to temp {temp_id}")
+                    logger.info(f"Assigned ID {assigned} to client {temp_id}@{addr}")
                 elif mtype == SYNC:
-                    pid = msg['peer_id']
-                    addr = tuple(msg['addr'])
+                    # Extrai o ID do peer
+                    pid = msg.get('peer_id')
+                    if not pid:
+                        logger.warning(f"SYNC message missing peer_id: {msg}")
+                        continue
+                        
+                    # Extrai o endereço
+                    addr_list = msg.get('addr')
+                    if not addr_list or len(addr_list) < 2:
+                        logger.warning(f"SYNC message has invalid addr: {msg}")
+                        continue
+                        
+                    addr = tuple(addr_list[:2])  # Pega apenas host e porta
+                    # Atualiza o endereço do peer
                     self.addrs[pid] = addr
-                    # broadcast to all other clients
+                    
+                    # Broadcast para todos os outros clientes
+                    broadcast_count = 0
                     for other_id, w in self.clients.items():
                         if other_id != pid:
-                            out = {'type': SYNC, 'peer_id': pid, 'addr': addr}
-                            w.write(json.dumps(out).encode() + b'\n')
-                            await w.drain()
-                    logger.info(f"Synced peer {pid}@{addr}")
+                            try:
+                                out = {'type': SYNC, 'peer_id': pid, 'addr': list(addr)}
+                                w.write(json.dumps(out).encode() + b'\n')
+                                await w.drain()
+                                broadcast_count += 1
+                            except Exception as e:
+                                logger.warning(f"Failed to broadcast to {other_id}: {e}")
+                                
+                    logger.info(f"Synced peer {pid}@{addr} to {broadcast_count} other peers")
                 elif mtype == DATA:
+                    # Extrai o destinatário
                     dest = msg.get('to')
+                    if not dest:
+                        logger.warning(f"DATA message missing 'to' field: {msg}")
+                        continue
+                        
+                    # Encaminha a mensagem
                     if dest in self.clients:
-                        w = self.clients[dest]
-                        w.write(line)
-                        await w.drain()
-                        logger.info(f"Forwarded DATA from {msg.get('from')} to {dest}")
+                        try:
+                            w = self.clients[dest]
+                            w.write(line)
+                            await w.drain()
+                            logger.info(f"Forwarded DATA from {msg.get('from')} to {dest}")
+                        except Exception as e:
+                            logger.warning(f"Failed to forward DATA to {dest}: {e}")
+                    else:
+                        logger.warning(f"DATA destination not found: {dest}")
                 
                 elif mtype == CONNECT:
-                    # Client wants to connect to another peer
+                    # Extrai os IDs de origem e destino
                     from_id = msg.get('from')
                     to_id = msg.get('to')
                     
+                    if not from_id or not to_id:
+                        logger.warning(f"CONNECT message missing from/to: {msg}")
+                        continue
+                    
+                    logger.info(f"Connection request from {from_id} to {to_id}")
+                    
+                    # Verifica se ambos os peers estão registrados
                     if from_id in self.addrs and to_id in self.addrs and to_id in self.clients:
-                        # Add to connections tracking
+                        # Adiciona ao rastreamento de conexões
                         if from_id in self.connections:
                             self.connections[from_id].add(to_id)
-                        
-                        # Get addresses
+                            
+                        # Obtém os endereços
                         from_addr = self.addrs[from_id]
                         to_addr = self.addrs[to_id]
                         
-                        # Send holepunch request to target
-                        holepunch_msg = {
-                            'type': HOLEPUNCH,
-                            'from': from_id,
-                            'addr': list(from_addr),
-                            'timestamp': time.time()
-                        }
+                        logger.info(f"Initiating connection: {from_id}@{from_addr} -> {to_id}@{to_addr}")
                         
-                        # Send to target client
-                        to_writer = self.clients[to_id]
-                        to_writer.write(json.dumps(holepunch_msg).encode() + b'\n')
-                        await to_writer.drain()
+                        try:
+                            # Envia solicitação de holepunch para o destino
+                            holepunch_msg = {
+                                'type': HOLEPUNCH,
+                                'from': from_id,
+                                'addr': list(from_addr),
+                                'timestamp': time.time()
+                            }
+                            
+                            # Envia para o cliente de destino
+                            to_writer = self.clients[to_id]
+                            to_writer.write(json.dumps(holepunch_msg).encode() + b'\n')
+                            await to_writer.drain()
+                            logger.info(f"Sent holepunch request to {to_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send holepunch to {to_id}: {e}")
+                            writer.write(json.dumps({
+                                'type': 'error',
+                                'message': f"Failed to contact peer {to_id}",
+                                'timestamp': time.time()
+                            }).encode() + b'\n')
+                            await writer.drain()
+                            continue
                         
-                        # Send confirmation back to requester
-                        confirm_msg = {
-                            'type': 'connect_initiated',
-                            'to': to_id,
-                            'addr': list(to_addr),
-                            'timestamp': time.time()
-                        }
-                        writer.write(json.dumps(confirm_msg).encode() + b'\n')
-                        await writer.drain()
-                        
-                        logger.info(f"Initiated connection from {from_id} to {to_id}")
+                        try:
+                            # Envia confirmação de volta para o solicitante
+                            confirm_msg = {
+                                'type': 'connect_initiated',
+                                'to': to_id,
+                                'addr': list(to_addr),
+                                'timestamp': time.time()
+                            }
+                            writer.write(json.dumps(confirm_msg).encode() + b'\n')
+                            await writer.drain()
+                            
+                            logger.info(f"Initiated connection from {from_id} to {to_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to send confirmation to {from_id}: {e}")
+                    else:
+                        # Peer de destino não encontrado
+                        logger.warning(f"Connection target not found: {to_id}")
+                        try:
+                            error_msg = {
+                                'type': 'error',
+                                'message': f"Peer {to_id} not found or not connected",
+                                'timestamp': time.time()
+                            }
+                            writer.write(json.dumps(error_msg).encode() + b'\n')
+                            await writer.drain()
+                        except Exception as e:
+                            logger.warning(f"Failed to send error to {from_id}: {e}")
         except ConnectionResetError:
-            pass
+            logger.info(f"Connection reset by peer: {peername}")
+        except Exception as e:
+            logger.error(f"Error handling TCP connection: {e}")
         finally:
             if assigned:
                 self.clients.pop(assigned, None)
