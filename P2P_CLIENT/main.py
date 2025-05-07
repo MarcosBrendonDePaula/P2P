@@ -108,14 +108,14 @@ async def fetch_stun_relays(local_file=None):
         
         # Se não encontrou nenhum relay, adiciona um padrão para testes
         if not relays:
-            logger.warning("Nenhum relay encontrado no JSON, adicionando servidor padrão para testes")
-            relays.append(("177.23.196.199", 54321))
+            logger.warning("Nenhum relay encontrado no JSON, adicionando servidor da rede local para testes")
+            relays.append(("192.168.1.23", 54321))
             
         return relays
     except Exception as e:
         logger.error(f"Failed to fetch STUN+Relay list: {e}")
-        logger.warning("Usando servidor padrão como fallback")
-        return [("177.23.196.199", 54321)]  # Servidor padrão como fallback
+        logger.warning("Usando servidor da rede local como fallback")
+        return [("192.168.1.23", 54321)]  # Servidor da rede local como fallback
 
 class P2PNodeProtocol(asyncio.DatagramProtocol):
     def __init__(self, relays):
@@ -142,11 +142,31 @@ class P2PNodeProtocol(asyncio.DatagramProtocol):
         self.public_endpoint = public_ep
         logger.info(f"Using local endpoint: {public_ep}")
             
-        # TCP connection to each relay
+        # TCP connection to each relay - tenta localhost primeiro se o host for um IP da rede local
         for host, port in self.relays:
-            try:
-                reader, writer = await asyncio.open_connection(host, port)
+            # Lista de hosts para tentar, começando com o original
+            hosts_to_try = [host]
+            
+            # Se o host for um IP da rede local (192.168.x.x), tenta localhost primeiro
+            if host.startswith('192.168.'):
+                hosts_to_try = ['127.0.0.1', host]
                 
+            # Tenta cada host na lista
+            connected = False
+            for try_host in hosts_to_try:
+                try:
+                    logger.info(f"Trying to connect to {try_host}:{port}...")
+                    reader, writer = await asyncio.open_connection(try_host, port)
+                    connected = True
+                    host = try_host  # Atualiza o host para o que funcionou
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to connect to {try_host}:{port}: {e}")
+                    
+            if not connected:
+                continue
+                
+            try:
                 # Send HELLO to get assigned ID
                 temp_id = uuid.uuid4().hex[:8]
                 hello_msg = {
@@ -479,10 +499,10 @@ async def main():
     local_file = args.local_file or DEFAULT_LOCAL_CONFIG
     relays = await fetch_stun_relays(local_file)
     
-    # Se não conseguiu carregar do arquivo, usa o IP público como fallback
+    # Se não conseguiu carregar do arquivo, usa o IP da rede local como fallback
     if not relays:
-        logger.warning("No relays available from config. Using public IP as fallback.")
-        relays = [("177.23.196.199", 54321)]
+        logger.warning("No relays available from config. Using local network IP as fallback.")
+        relays = [("192.168.1.23", 54321)]
 
     # Cria o endpoint UDP de forma simplificada
     loop = asyncio.get_event_loop()

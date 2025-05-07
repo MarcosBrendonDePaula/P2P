@@ -1,12 +1,23 @@
 {
-    "stun": [
-      "177.23.196.199:54321"
-    ],
-    "turn": [
-      {
-        "url": "turn:meuservidor.com:5349",
-        "username": "usuario",
-        "credential": "senha_forte"
-      }
-    ]
+  "stun": [
+    "stun://127.0.0.1:3478",
+    "stun://localhost:3478"
+  ],
+  "turn": [
+    {
+      "url": "turn:127.0.0.1:5349",
+      "username": "teste",
+      "credential": "teste123"
+    }
+  ],
+  "ice_servers": [
+    {
+      "urls": ["stun:127.0.0.1:3478"]
+    },
+    {
+      "urls": ["turn:127.0.0.1:5349"],
+      "username": "teste",
+      "credential": "teste123"
+    }
+  ]
 }

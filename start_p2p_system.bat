@@ -19,7 +19,7 @@ if not exist resources\stun_servers.json (
     echo Criando arquivo de configuracao padrao...
     echo {> resources\stun_servers.json
     echo     "stun": [>> resources\stun_servers.json
-    echo       "177.23.196.199:54321">> resources\stun_servers.json
+    echo       "192.168.1.23:54321">> resources\stun_servers.json
     echo     ],>> resources\stun_servers.json
     echo     "turn": [>> resources\stun_servers.json
     echo       {>> resources\stun_servers.json
